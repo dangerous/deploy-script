@@ -1,0 +1,16 @@
+module = example
+path = /usr/local/www
+
+owner = deploy
+group = apache
+
+excludes = sql /tests tmp/cache/*
+
+ssh_user = deploy
+
+[staging]
+hosts = bulldog dalmatian
+
+[live]
+hosts = poodle labrador
+

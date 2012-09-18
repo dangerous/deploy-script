@@ -1,0 +1,183 @@
+#!/usr/bin/perl -w
+use strict;
+use Config::Tiny;
+use Getopt::Long;
+use Term::ANSIColor;
+
+## This needs to be configured to the directory containing this script
+#
+my $deployDir = '/home/deploy/deployment-scripts/';
+my $logFile = "$deployDir/deploy.log";
+chdir "$deployDir";
+my $dryRun = '';
+
+## Easy pretty printing
+#
+sub write_log {
+  unless ($dryRun) {
+    open (MYFILE, ">>$logFile");
+    print MYFILE "$_[0]\n";
+    close (MYFILE); 
+  }
+}
+
+sub say {
+  print color 'yellow';
+  print "$_[0]\n";
+  print color 'reset';
+  write_log $_[0];
+}
+
+sub badnews {
+  print color 'red';
+  print "$_[0]\n";
+  print color 'reset';
+  write_log $_[0];
+  exit 1;
+}
+
+
+######################################################
+#  START SCRIPT                                     ##
+######################################################
+## Brief rundown:                                   ##
+##                                                  ##
+##   Options handling                               ##
+##   Validate command-line options                  ##
+##   Read config file and setup variables           ##
+##   Go into the module, checkout the right commit  ##
+##   Set the permissions                            ##
+##   Rsync the module                               ##
+##                                                  ##
+######################################################
+
+
+my $command_line = "$0 ". (join " ", @ARGV);
+
+## Options handling
+#
+my $tag           = '';
+my $branch        = '';
+my $help          = '';
+my $man           = '';
+# $dryRun is declared above as I use it in the log subrouting
+my $environment   = 'staging';
+
+GetOptions('tag=s'         => \$tag,            # e.g. --tag 1.2
+           'branch=s'      => \$branch,         # e.g. --branch master
+           'environment=s' => \$environment,    # e.g. --environment live
+           'dry-run|n'       => \$dryRun);        # e.g. --dryrun
+
+write_log "\n$ARGV[0]: $command_line";
+
+## Validate command-line options
+#
+unless ($ARGV[0]) {
+  badnews "You haven't specified a module to update";
+}
+if ($tag && $branch) {
+  badnews "Can't specify both tag and branch";
+}
+unless ($tag || $branch) {
+  badnews "You must specify a branch or a tag";
+}
+
+## Read config file and setup variables
+#
+my $depFile = "configs/$ARGV[0]";
+unless (-f "$depFile") {
+  badnews "Deployment File $depFile not found";
+}
+
+my $config = Config::Tiny->read($depFile);
+
+unless ($config->{$environment}) {
+  badnews "Environment $environment not defined";
+}
+
+my $module = $config->{_}->{module};
+my $path = $config->{_}->{path};
+my $owner = $config->{_}->{owner};
+my $group = $config->{_}->{group};
+my $sshUser = $config->{_}->{ssh_user};
+my @includes;
+if ($config->{_}->{includes}) {
+  @includes = split /\s+/, $config->{_}->{includes};
+}
+my @excludes;
+if ($config->{_}->{excludes}) {
+  @excludes = split /\s+/, $config->{_}->{excludes};
+}
+my @hosts;
+@hosts = split /\s+/, $config->{$environment}->{hosts};
+
+## Go into the module, checkout the right commit
+#
+unless (-d "modules/$module") {
+  badnews "$module doesn't seem to be checked out";
+}
+
+say "Updating modules/$module";
+chdir "modules/$module";
+system("git fetch --all");
+if ($tag) {
+  say ("Checking out tag $tag");
+  my $retVal = system("git checkout $tag");
+  if ($retVal != 0) {
+    badnews "Could not checkout tag $tag - are you sure it exists?";
+  }
+} else {
+  say ("Checking out branch $branch");
+  system("git checkout -t $branch origin/branch 2>/dev/null");
+  my $retVal = system("git checkout $branch");
+  if ($retVal != 0) {
+    badnews "Could not checkout branch $branch - are you sure it exists?";
+  }
+  system("git pull origin $branch");
+}
+system("git submodule init");
+system("git submodule update");
+
+## Set the permissions
+#
+my $ownerString;
+my $groupString;
+
+if ($owner && $group) {
+  $ownerString = "$owner:$group"
+} elsif ($owner) {
+  $ownerString = $owner;
+} elsif ($group) {
+  $groupString = $group;
+}
+
+my $retVal;
+if ($ownerString) {
+  say "chowning module to $ownerString";
+  $retVal = system("chown -R $ownerString .");
+} elsif ($groupString) {
+  say "chgrping module to $groupString";
+  $retVal = system("chgrp -R $groupString .");
+}
+if ($retVal != 0) {
+  badnews "chown -R $ownerString failed";
+}
+
+## Rsync the module
+#
+my $includeStr = "";
+foreach my $include (@includes) {
+  $includeStr .= " --include '$include'";
+}
+my $excludeStr = "--exclude '.git*'";
+foreach my $exclude (@excludes) {
+  $excludeStr .= " --exclude '$exclude'";
+}
+foreach my $host (@hosts) {
+  my $args = 'avz';
+  if ($dryRun) {
+    $args .= 'n';
+  }
+  say("rsync -$args --delete $includeStr $excludeStr $deployDir/modules/$module $sshUser\@$host:$path");
+  system("rsync -$args --delete $includeStr $excludeStr $deployDir/modules/$module $sshUser\@$host:$path");
+}
