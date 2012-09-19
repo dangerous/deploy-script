@@ -49,3 +49,6 @@ TODO
 * Add a repo to the config file so if the module has not been cloned, the script can do it
 * Add a way to have per-environment path
 * Add a way to have per-host users
+* Whether to --delete should be an option
+* Should be able to pass alternative options to rsync
+* have a defaults ini file
